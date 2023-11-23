@@ -1,6 +1,7 @@
 %code requires {
   #include <memory>
   #include <string>
+  #include "ast.hpp"
 }
 
 %{
@@ -8,10 +9,11 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include "ast.hpp"
 
 // 声明 lexer 函数和错误处理函数
 int yylex();
-void yyerror(std::unique_ptr<std::string> &ast, const char *s);
+void yyerror(std::unique_ptr<BaseAST> &ast, const char *s);
 
 using namespace std;
 
@@ -20,7 +22,7 @@ using namespace std;
 // 定义 parser 函数和错误处理函数的附加参数
 // 我们需要返回一个字符串作为 AST, 所以我们把附加参数定义成字符串的智能指针
 // 解析完成后, 我们要手动修改这个参数, 把它设置成解析得到的字符串
-%parse-param { std::unique_ptr<std::string> &ast }
+%parse-param { std::unique_ptr<BaseAST> &ast }
 
 // yylval 的定义, 我们把它定义成了一个联合体 (union)
 // 因为 token 的值有的是字符串指针, 有的是整数
@@ -30,16 +32,20 @@ using namespace std;
 %union {
   std::string *str_val;
   int int_val;
+  BaseAST *ast_val;
 }
 
 // lexer 返回的所有 token 种类的声明
 // 注意 IDENT 和 INT_CONST 会返回 token 的值, 分别对应 str_val 和 int_val
+%token OR AND LE LT GE GT EQ NEQ PLUS SUB MUL DIV MOD NOT
+
 %token INT RETURN
 %token <str_val> IDENT
 %token <int_val> INT_CONST
 
 // 非终结符的类型定义
-%type <str_val> FuncDef FuncType Block Stmt Number
+%type <ast_val> FuncDef FuncType Block Stmt Number
+%type <ast_val> Exp PrimaryExp UnaryExp MulExp AddExp RelExp EqExp LAndExp LOrExp
 
 %%
 
@@ -50,7 +56,9 @@ using namespace std;
 // $1 指代规则里第一个符号的返回值, 也就是 FuncDef 的返回值
 CompUnit
   : FuncDef {
-    ast = unique_ptr<string>($1);
+    auto comp_unit = make_unique<CompUnitAST>();
+    comp_unit->func_def = unique_ptr<BaseAST>($1);
+    ast = move(comp_unit);
   }
   ;
 
@@ -66,37 +74,214 @@ CompUnit
 // 这种写法会省下很多内存管理的负担
 FuncDef
   : FuncType IDENT '(' ')' Block {
-    auto type = unique_ptr<string>($1);
-    auto ident = unique_ptr<string>($2);
-    auto block = unique_ptr<string>($5);
-    $$ = new string(*type + " " + *ident + "() " + *block);
+    auto ast = new FuncDefAST();
+    ast->func_type = unique_ptr<BaseAST>($1);
+    ast->ident = *unique_ptr<string>($2);
+    ast->block = unique_ptr<BaseAST>($5);
+    $$ = ast;
   }
   ;
 
 // 同上, 不再解释
 FuncType
   : INT {
-    $$ = new string("int");
+    auto ast = new FuncTypeAST();
+    ast->_type = string("int");
+    $$ = ast;
   }
   ;
 
 Block
   : '{' Stmt '}' {
-    auto stmt = unique_ptr<string>($2);
-    $$ = new string("{ " + *stmt + " }");
+    auto ast = new BlockAST();
+    ast->ast = unique_ptr<BaseAST>($2);
+    $$ = ast;
   }
   ;
 
 Stmt
-  : RETURN Number ';' {
-    auto number = unique_ptr<string>($2);
-    $$ = new string("return " + *number + ";");
+  : RETURN Exp ';' {
+    auto ast = new ReturnStmtAST();
+    ast->ast = unique_ptr<BaseAST>($2); 
+    $$ = ast;
   }
   ;
 
+Exp
+  : LOrExp  {
+    $$ = $1;
+  }
+  ;
+
+PrimaryExp
+  : '(' Exp ')' {
+    auto ast = new PrimaryExpAST();
+    ast->val = unique_ptr<BaseAST>($2);
+    $$ = ast;
+  }
+  | Number {
+    auto ast = new PrimaryExpAST();
+    ast->val = unique_ptr<BaseAST>($1);
+    $$ = ast;
+  }
+  ;
+
+UnaryExp
+  : PrimaryExp {
+    $$ = $1;
+  } 
+  | PLUS UnaryExp {
+    auto ast = new UnaryExpAST();
+    ast->child = unique_ptr<BaseAST>($2);
+    ast->op = UnaryOP::PLUS;
+    $$ = ast;
+  } 
+  | SUB UnaryExp {
+    auto ast = new UnaryExpAST();
+    ast->child = unique_ptr<BaseAST>($2);
+    ast->op = UnaryOP::NEG;
+    $$ = ast;
+  }
+  | NOT UnaryExp {
+    auto ast = new UnaryExpAST();
+    ast->child = unique_ptr<BaseAST>($2);
+    ast->op = UnaryOP::NOT;
+    $$ = ast;
+  }
+  ;
+
+MulExp
+  : UnaryExp {
+    $$ = $1;
+  } 
+  | MulExp MUL UnaryExp {
+    auto ast = new BinaryExpAST();
+    ast->left = unique_ptr<BaseAST>($1);
+    ast->right = unique_ptr<BaseAST>($3);
+    ast->op = BinaryOP::MUL;
+    $$ = ast;
+  }
+  | MulExp DIV UnaryExp {
+    auto ast = new BinaryExpAST();
+    ast->left = unique_ptr<BaseAST>($1);
+    ast->right = unique_ptr<BaseAST>($3);
+    ast->op = BinaryOP::DIV;
+    $$ = ast;
+  }
+  | MulExp MOD UnaryExp {
+    auto ast = new BinaryExpAST();
+    ast->left = unique_ptr<BaseAST>($1);
+    ast->right = unique_ptr<BaseAST>($3);
+    ast->op = BinaryOP::MOD;
+    $$ = ast;
+  }
+  ;
+
+AddExp
+  : MulExp {
+    $$ = $1;
+  }
+  | AddExp PLUS MulExp {
+    auto ast = new BinaryExpAST();
+    ast->left = unique_ptr<BaseAST>($1);
+    ast->right = unique_ptr<BaseAST>($3);
+    ast->op = BinaryOP::ADD;
+    $$ = ast;
+  } 
+  | AddExp SUB MulExp {
+    auto ast = new BinaryExpAST();
+    ast->left = unique_ptr<BaseAST>($1);
+    ast->right = unique_ptr<BaseAST>($3);
+    ast->op = BinaryOP::SUB;
+    $$ = ast;
+  } 
+  ;
+
+RelExp
+  : AddExp {
+    $$ = $1;
+  }  
+  | RelExp LE AddExp {
+    auto ast = new RelExpAST();
+    ast->left = unique_ptr<BaseAST>($1);
+    ast->right = unique_ptr<BaseAST>($3);
+    ast->op = RelOP::LE;
+    $$ = ast;
+  }
+  | RelExp GE AddExp {
+    auto ast = new RelExpAST();
+    ast->left = unique_ptr<BaseAST>($1);
+    ast->right = unique_ptr<BaseAST>($3);
+    ast->op = RelOP::GE;
+    $$ = ast;
+  }
+  | RelExp LT AddExp {
+    auto ast = new RelExpAST();
+    ast->left = unique_ptr<BaseAST>($1);
+    ast->right = unique_ptr<BaseAST>($3);
+    ast->op = RelOP::LT;
+    $$ = ast;
+  }
+  | RelExp GT AddExp {
+    auto ast = new RelExpAST();
+    ast->left = unique_ptr<BaseAST>($1);
+    ast->right = unique_ptr<BaseAST>($3);
+    ast->op = RelOP::GT;
+    $$ = ast;
+  }
+  ;
+
+EqExp
+  : RelExp {
+    $$ = $1;
+  } 
+  | EqExp EQ RelExp {
+    auto ast = new RelExpAST();
+    ast->left = unique_ptr<BaseAST>($1);
+    ast->right = unique_ptr<BaseAST>($3);
+    ast->op = RelOP::EQ;
+    $$ = ast;
+  }
+  | EqExp NEQ RelExp {
+    auto ast = new RelExpAST();
+    ast->left = unique_ptr<BaseAST>($1);
+    ast->right = unique_ptr<BaseAST>($3);
+    ast->op = RelOP::NEQ;
+    $$ = ast;
+  }
+  ;
+
+LAndExp
+  : EqExp {
+    $$ = $1;
+  }
+  | LAndExp AND EqExp {
+    auto ast = new LogicalExpAST();
+    ast->left = unique_ptr<BaseAST>($1);
+    ast->right = unique_ptr<BaseAST>($3);
+    ast->op = LogicalOP::AND;
+    $$ = ast;
+  }
+  ;
+
+LOrExp
+  : LAndExp {
+    $$ = $1;
+  } 
+  | LOrExp OR LAndExp {
+    auto ast = new LogicalExpAST();
+    ast->left = unique_ptr<BaseAST>($1);
+    ast->right = unique_ptr<BaseAST>($3);
+    ast->op = LogicalOP::OR;
+    $$ = ast;
+  } 
+  ;  
+
 Number
   : INT_CONST {
-    $$ = new string(to_string($1));
+    auto ast = new NumberAST();
+    ast->val = $1;
+    $$ = ast;
   }
   ;
 
@@ -104,6 +289,6 @@ Number
 
 // 定义错误处理函数, 其中第二个参数是错误信息
 // parser 如果发生错误 (例如输入的程序出现了语法错误), 就会调用这个函数
-void yyerror(unique_ptr<string> &ast, const char *s) {
+void yyerror(unique_ptr<BaseAST> &ast, const char *s) {
   cerr << "error: " << s << endl;
 }

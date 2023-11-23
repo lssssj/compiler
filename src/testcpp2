@@ -1,0 +1,14 @@
+#include <iostream>
+
+#include "ast.hpp"
+
+using namespace std;
+
+int main() {
+    auto n = new NumberAST();
+    n->val = 20;
+    n->Dump();
+    auto v = new ReturnStmtAST();
+    v->ast = unique_ptr<BaseAST>(n);
+    v->Dump();
+}

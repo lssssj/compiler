@@ -27,13 +27,35 @@ Decimal       [1-9][0-9]*
 Octal         0[0-7]*
 Hexadecimal   0[xX][0-9a-fA-F]+
 
+%x COMMENT
+
 %%
+
+"/*"    BEGIN(COMMENT);
+<COMMENT>.|\n  {}
+<COMMENT>"*/"   BEGIN(INITIAL);
 
 {WhiteSpace}    { /* 忽略, 不做任何操作 */ }
 {LineComment}   { /* 忽略, 不做任何操作 */ }
 
 "int"           { return INT; }
 "return"        { return RETURN; }
+
+"||"            { return OR; }
+"&&"            { return AND; }
+"<="            { return LE; }
+"<"             { return LT; }
+">="            { return GE; }
+">"             { return GT; }
+"=="            { return EQ; }
+"!="            { return NEQ; }
+"+"             { return PLUS; }
+"-"             { return SUB; }
+"*"             { return MUL; }
+"/"             { return DIV; }
+"%"             { return MOD; }
+"!"             { return NOT; }
+
 
 {Identifier}    { yylval.str_val = new string(yytext); return IDENT; }
 
