@@ -8,7 +8,7 @@
             {
                 "type": "lldb",
                 "request": "launch",
-                "name": "Debug jjj",
+                "name": "RISCV",
                 "program": "build/compiler",
                 "args": [ "-riscv", "hello.c", "-o", "hello.riscv"],
                 "cwd": "${workspaceFolder}",

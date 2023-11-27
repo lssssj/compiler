@@ -1,3 +1,5 @@
 int main() {
-  return 9 > 10;
+  const int x = 10;
+  x = 1;
+  return x;
 }

@@ -9,6 +9,7 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <algorithm>
 #include "ast.hpp"
 
 // 声明 lexer 函数和错误处理函数
@@ -33,11 +34,12 @@ using namespace std;
   std::string *str_val;
   int int_val;
   BaseAST *ast_val;
+  BType type;
 }
 
 // lexer 返回的所有 token 种类的声明
 // 注意 IDENT 和 INT_CONST 会返回 token 的值, 分别对应 str_val 和 int_val
-%token OR AND LE LT GE GT EQ NEQ PLUS SUB MUL DIV MOD NOT
+%token OR AND LE LT GE GT EQ NEQ PLUS SUB MUL DIV MOD NOT CONST
 
 %token INT RETURN
 %token <str_val> IDENT
@@ -46,6 +48,8 @@ using namespace std;
 // 非终结符的类型定义
 %type <ast_val> FuncDef FuncType Block Stmt Number
 %type <ast_val> Exp PrimaryExp UnaryExp MulExp AddExp RelExp EqExp LAndExp LOrExp
+%type <ast_val> BlockItem ConstDef VarDef Decl ConstDecl VarDecl
+%type <type> BType;
 
 %%
 
@@ -92,17 +96,134 @@ FuncType
   ;
 
 Block
-  : '{' Stmt '}' {
+  : '{' BlockItem '}' {
+    auto block = (BlockAST*) $2;
+    std::reverse(block->asts.begin(), block->asts.end());
+    $$ = block;
+  }
+  ;
+
+BlockItem
+  : Stmt {
     auto ast = new BlockAST();
-    ast->ast = unique_ptr<BaseAST>($2);
+    ast->asts.push_back(unique_ptr<BaseAST>($1));
+    $$ = ast;
+  }
+  | Decl {
+    auto ast = new BlockAST();
+    ast->asts.push_back(unique_ptr<BaseAST>($1));
+    $$ = ast;
+  }
+  | Stmt BlockItem {
+    auto block = (BlockAST*)($2);
+    auto ast = unique_ptr<BaseAST>($1);
+    block->asts.push_back(std::move(ast));
+    $$ = block;
+  }
+  | Decl BlockItem {
+    auto block = (BlockAST*)($2);
+    auto ast = unique_ptr<BaseAST>($1);
+    block->asts.push_back(std::move(ast));
+    $$ = block;
+  }
+
+Decl
+  : ConstDecl {
+    auto ast = (ConstDeclAST*) $1;
+    std::reverse(ast->defVars.begin(), ast->defVars.end());
+    $$ = ast;
+  }  
+  | VarDecl {
+    auto ast = (DeclAST*) $1;
+    std::reverse(ast->defVars.begin(), ast->defVars.end());
     $$ = ast;
   }
   ;
 
+ConstDecl
+  : CONST BType ConstDef ';' {
+    auto decl = (ConstDeclAST*)($3);
+    decl->type = $2;
+    $$ = decl;
+  } 
+  ;
+
+ConstDef
+  : IDENT '=' Exp {
+    auto decl = new ConstDeclAST();
+    auto ast = new ConstDefAST();
+    ast->name = *unique_ptr<string>($1);
+    ast->init = unique_ptr<BaseAST>($3);
+    decl->defVars.push_back(std::unique_ptr<ConstDefAST>(ast));
+    $$ = decl;
+  }
+  | IDENT '=' Exp ',' ConstDef {
+    auto decl = (ConstDeclAST*)($5);
+    auto ast = new ConstDefAST();
+    ast->name = *unique_ptr<string>($1);
+    ast->init = unique_ptr<BaseAST>($3);
+    decl->defVars.push_back(std::unique_ptr<ConstDefAST>(ast));
+    $$ = decl;
+  }
+  ;
+
+VarDecl
+  : BType VarDef ';' {
+    auto decl = (DeclAST*)($2);
+    decl->type = $1;
+    $$ = decl;
+  } 
+  ;
+
+VarDef
+  : IDENT {
+    auto decl = new DeclAST();
+    auto ast = new DefAST();
+    ast->name = *unique_ptr<string>($1);
+    decl->defVars.push_back(std::unique_ptr<DefAST>(ast));
+    $$ = decl;
+  }
+  | IDENT '=' Exp {
+    auto decl = new DeclAST();
+    auto ast = new DefAST();
+    ast->name = *unique_ptr<string>($1);
+    ast->init = unique_ptr<BaseAST>($3);
+    decl->defVars.push_back(std::unique_ptr<DefAST>(ast));
+    $$ = decl;
+  } 
+  | IDENT ',' VarDef {
+    auto decl = (DeclAST*)$3;
+    auto ast = new DefAST();
+    ast->name = *unique_ptr<string>($1);
+    decl->defVars.push_back(std::unique_ptr<DefAST>(ast));
+    $$ = decl;
+  }
+  | IDENT '=' Exp ',' VarDef {
+    auto decl = (DeclAST*)$5;
+    auto ast = new DefAST();
+    ast->name = *unique_ptr<string>($1);
+    ast->init = unique_ptr<BaseAST>($3);
+    decl->defVars.push_back(std::unique_ptr<DefAST>(ast));
+    $$ = decl;
+  }
+  ;
+
+BType
+  : INT {
+    $$ = BType::INT;
+  }
+  ;
+ 
 Stmt
   : RETURN Exp ';' {
     auto ast = new ReturnStmtAST();
     ast->ast = unique_ptr<BaseAST>($2); 
+    $$ = ast;
+  }
+  | IDENT '=' Exp ';' {
+    auto ast = new AssignStmtAST();
+    ast->name = *unique_ptr<std::string>($1);
+    ast->val = unique_ptr<BaseAST>($3);
     $$ = ast;
   }
   ;
@@ -122,6 +243,11 @@ PrimaryExp
   | Number {
     auto ast = new PrimaryExpAST();
     ast->val = unique_ptr<BaseAST>($1);
+    $$ = ast;
+  }
+  | IDENT {
+    auto ast = new IdentfierAST();
+    ast->name = *unique_ptr<string>($1);
     $$ = ast;
   }
   ;

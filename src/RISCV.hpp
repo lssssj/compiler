@@ -1,9 +1,11 @@
 #pragma once
 
 #include <assert.h>
+#include <cstddef>
 #include <cstdio>
 #include <iostream>
 #include <ostream>
+#include <regex>
 #include <string>
 #include <unordered_map>
 #include "ast.hpp"
@@ -16,6 +18,12 @@ static std::string reg_names[16] = {"x0", "t0", "t1", "t2", "t3", "t4", "t5", "t
                            "a0", "a1","a2","a3","a4","a5","a6","a7"};
 struct Reg {
   int offset;
+  bool stack;
+
+  friend std::ostream& operator<<(std::ostream& os, const Reg& r) {
+      os << "Reg{offset=" << r.offset << ", stack=" << r.stack << "}" << std::endl;
+      return os;
+  }
 };
 
 class RISCVEnvironemt {
@@ -27,6 +35,7 @@ class RISCVEnvironemt {
 
     int zeroReg = 0;
     int retReg = 8;
+    int stack_top = 0;
 
     Reg FindReg() {
       for (int i = 1; i < 16; i++) {
@@ -38,12 +47,33 @@ class RISCVEnvironemt {
       return Reg {-1};
     }
 
+    Reg allocStack() {
+      Reg r{.offset = stack_top, .stack = true};
+      stack_top += 4;
+      return r;
+    }
+
     void SetRegBusy(int i) {
       reg_state[i] = 1;
     }
 
     void SetRegFree(int i) {
       reg_state[i] = -1;
+    }
+
+    void alloc(const koopa_raw_type_t &ty) {
+      int size = cal_size(ty);
+      stack_top += size;
+    }
+
+    int cal_size(const koopa_raw_type_t &ty) {
+      if (ty->tag == KOOPA_RTT_UNIT) {
+        return 0;
+      }
+      if (ty->tag == KOOPA_RTT_ARRAY) {
+        return ty->data.array.len * cal_size(ty->data.array.base);
+      }
+      return 4;
     }
 };
 
@@ -55,6 +85,10 @@ class RISCVCodeGen {
 
     static std::string emitRet() {
       return "\tret\n";
+    }
+
+    static std::string emitStackAddi(int offset) {
+      return "\taddi sp, sp, " + std::to_string(offset) + "\n";
     }
 
     static std::string emitLi(int destReg, int num) {
@@ -120,6 +154,14 @@ class RISCVCodeGen {
     static std::string emitSra(int destReg, int opReg1, int opReg2) {
       return "\tsra " + reg_names[destReg] + ", " + reg_names[opReg1] + ", " + reg_names[opReg2] + "\n";
     }
+
+    static std::string emitSw(std::string src, std::string dest) {
+      return "\tsw " + src + ", " + dest + "\n";
+    }
+
+    static std::string emitLw(std::string src, std::string dest) {
+      return "\tlw " + src + ", " + dest + "\n";
+    }
 };
 
 void Visit(RISCVEnvironemt &env, const koopa_raw_program_t &program);
@@ -135,6 +177,8 @@ Reg Visit(RISCVEnvironemt &env, const koopa_raw_value_t &value);
 Reg Visit(RISCVEnvironemt &env, const koopa_raw_return_t &ret);
 Reg Visit(RISCVEnvironemt &envt, const koopa_raw_integer_t &val);
 Reg Visit(RISCVEnvironemt &env, const koopa_raw_binary_t &val);
+Reg Visit(RISCVEnvironemt &env, const koopa_raw_load_t &val);
+Reg Visit(RISCVEnvironemt &env, const koopa_raw_store_t &val);
 
 // 访问 raw program
 void Visit(RISCVEnvironemt &env, const koopa_raw_program_t &program) {
@@ -179,8 +223,22 @@ void Visit(RISCVEnvironemt &env, const koopa_raw_function_t &func) {
   // 访问所有基本块
   env.code << " \t.global " << (func->name + 1) << "\n";
   env.code << (func->name + 1) << ":\n";
+  assert(env.stack_top == 0);
+  int stack_size = 0;
+  for (size_t i = 0; i < func->bbs.len; i++) {
+    auto ptr = reinterpret_cast<koopa_raw_basic_block_t>(func->bbs.buffer[i]);
+    for (size_t j = 0; j < ptr->insts.len; j++) {
+      auto inst = reinterpret_cast<koopa_raw_value_t>(ptr->insts.buffer[j]);
+      stack_size += env.cal_size(inst->ty);
+    }
+  }
+  if (stack_size != 0) {
+    env.code << RISCVCodeGen::emitStackAddi(-stack_size);
+  }
   Visit(env, func->bbs);
 }
+
+
 
 // 访问基本块
 void Visit(RISCVEnvironemt &env, const koopa_raw_basic_block_t &bb) {
@@ -200,20 +258,42 @@ Reg Visit(RISCVEnvironemt &env, const koopa_raw_value_t &value) {
   switch (kind.tag) {
     case KOOPA_RVT_RETURN: {
       // 访问 return 指令
+      // ret没有返回值 0
       return Visit(env, kind.data.ret);
     }
       
     case KOOPA_RVT_INTEGER: {
       // 访问 integer 指令
+      // 有返回值 4
       Reg r = Visit(env, kind.data.integer);
       env.value_map[value] = r;
       return r;
     }
     case KOOPA_RVT_BINARY:  {
       // 访问 binary op 
+      // 有返回值 4
       Reg r = Visit(env, kind.data.binary);
       env.value_map[value] = r;
       return r;
+    }
+    case KOOPA_RVT_ALLOC: {
+      // alloc有返回值
+      Reg r = {.offset = env.stack_top, .stack = true};
+      env.alloc(value->ty);
+      env.value_map[value] = r;
+      return r;
+    }
+    case KOOPA_RVT_LOAD: {
+      // load有返回值
+      Reg r = Visit(env, kind.data.load);
+      env.value_map[value] = r;
+      return r;
+    }
+    case KOOPA_RVT_STORE: {
+      // store没有返回值
+      Reg v = Visit(env, kind.data.store);
+      env.value_map[value] = v;
+      return v;
     }
     default:
       // 其他类型暂时遇不到
@@ -226,7 +306,15 @@ Reg Visit(RISCVEnvironemt &env, const koopa_raw_value_t &value) {
 // ...
 Reg Visit(RISCVEnvironemt &env, const koopa_raw_return_t &ret) {
   Reg r = Visit(env, ret.value);
-  env.code << RISCVCodeGen::emitMv(env.retReg, r.offset);
+  if (r.stack) {
+    env.code << RISCVCodeGen::emitLw(reg_names[env.retReg] , std::to_string(r.offset) + "(sp)");
+  } else {
+    env.code << RISCVCodeGen::emitMv(env.retReg, r.offset);
+  }
+  if (env.stack_top != 0) {
+    env.code << RISCVCodeGen::emitStackAddi(env.stack_top);
+    env.stack_top = 0;
+  }
   env.code << RISCVCodeGen::emitRet(); 
   return Reg {-1};
 }
@@ -243,6 +331,16 @@ Reg Visit(RISCVEnvironemt &env, const koopa_raw_integer_t &val) {
 Reg Visit(RISCVEnvironemt &env, const koopa_raw_binary_t &val) {
   Reg lhs = Visit(env, val.lhs);
   Reg rhs = Visit(env, val.rhs);
+  if (lhs.stack) {
+    Reg temp = env.FindReg();
+    env.code << RISCVCodeGen::emitLw(reg_names[temp.offset], std::to_string(lhs.offset) + "(sp)");
+    lhs = temp;
+  }
+  if (rhs.stack) {
+    Reg temp = env.FindReg();
+    env.code << RISCVCodeGen::emitLw(reg_names[temp.offset], std::to_string(rhs.offset) + "(sp)");
+    rhs = temp;
+  }
   Reg ret = env.FindReg();
   switch (val.op) {
     case KOOPA_RBO_EQ:
@@ -303,5 +401,45 @@ Reg Visit(RISCVEnvironemt &env, const koopa_raw_binary_t &val) {
   }
   env.SetRegFree(lhs.offset);
   env.SetRegFree(rhs.offset);
-  return ret;
+  Reg r = env.allocStack();
+  env.code << RISCVCodeGen::emitSw(reg_names[ret.offset], std::to_string(r.offset) + "(sp)");
+  env.SetRegFree(ret.offset);
+  return r;
+}
+
+Reg Visit(RISCVEnvironemt &env, const koopa_raw_load_t &val) {
+  Reg r = Visit(env, val.src);
+  // Reg dest = env.FindReg();
+  // if (dest.offset == -1) {
+  //   dest = env.allocStack();
+  // }
+  Reg dest = env.allocStack();
+  if (!r.stack && !dest.stack) {
+    env.code << RISCVCodeGen::emitMv(dest.offset, r.offset);
+  } else if (!r.stack && dest.stack) {
+    env.code << RISCVCodeGen::emitSw(reg_names[r.offset], std::to_string(dest.offset) + "(sp)");
+  } else if (r.stack && !dest.stack) {
+    env.code << RISCVCodeGen::emitLw(reg_names[dest.offset], std::to_string(r.offset) + "(sp)");
+  } else {
+    Reg temp = env.FindReg();
+    env.code << RISCVCodeGen::emitLw(reg_names[temp.offset], std::to_string(r.offset) + "(sp)");
+    env.code << RISCVCodeGen::emitSw(reg_names[temp.offset], std::to_string(dest.offset) + "(sp)");
+    env.SetRegFree(temp.offset);
+  }
+  return dest;
+}
+
+Reg Visit(RISCVEnvironemt &env, const koopa_raw_store_t &val) {
+  Reg dest = Visit(env, val.dest);
+  Reg value = Visit(env, val.value);
+  if (value.stack) {
+    Reg temp = env.FindReg();
+    env.code << RISCVCodeGen::emitLw(reg_names[temp.offset], std::to_string(value.offset) + "(sp)");
+    env.code << RISCVCodeGen::emitSw(reg_names[temp.offset], std::to_string(dest.offset) + "(sp)");
+    env.SetRegFree(temp.offset);
+  } else {
+    env.code << RISCVCodeGen::emitSw(reg_names[value.offset], std::to_string(dest.offset) + "(sp)");
+    env.SetRegFree(value.offset);
+  }
+  return value;
 }
