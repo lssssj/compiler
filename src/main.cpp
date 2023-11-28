@@ -52,7 +52,6 @@ int main(int argc, const char *argv[]) {
   }
   if (string(mode) == "-koopa") {
     std::ofstream fout(output);
-    std::cout << ir << std::endl;
     fout << ir << endl;
   } else if (string(mode) == "-riscv") {
     // 解析字符串 str, 得到 Koopa IR 程序

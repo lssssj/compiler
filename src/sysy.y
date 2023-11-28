@@ -96,7 +96,10 @@ FuncType
   ;
 
 Block
-  : '{' BlockItem '}' {
+  : '{' '}' {
+    $$ = new BlockAST();
+  }
+  | '{' BlockItem '}' {
     auto block = (BlockAST*) $2;
     std::reverse(block->asts.begin(), block->asts.end());
     $$ = block;
@@ -225,6 +228,15 @@ Stmt
     ast->name = *unique_ptr<std::string>($1);
     ast->val = unique_ptr<BaseAST>($3);
     $$ = ast;
+  }
+  | Block {
+    $$ = $1;
+  }
+  | Exp ';' {
+    $$ = $1;
+  }
+  | ';' {
+    $$ = new BlockAST();
   }
   ;
 

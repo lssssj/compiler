@@ -11,6 +11,7 @@
                 "name": "RISCV",
                 "program": "build/compiler",
                 "args": [ "-riscv", "hello.c", "-o", "hello.riscv"],
+                // -koopa hello.c -o hello.koopa
                 "cwd": "${workspaceFolder}",
                 "stopOnEntry": true
             }

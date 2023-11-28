@@ -34,7 +34,7 @@ enum class BType {
   INT,
 };
 
-struct Value {
+struct Var {
   BType type;
   std::string name;
   bool exited;
@@ -44,8 +44,8 @@ struct Value {
 
 class SymbolTable {
   public:
-    using Scopes = std::stack<std::unordered_map<std::string, Value>>;
-    using Scope = std::unordered_map<std::string, Value>;
+    using Scopes = std::stack<std::unordered_map<std::string, Var>>;
+    using Scope = std::unordered_map<std::string, Var>;
     Scopes scopes;
 
     void enterScope() {
@@ -58,8 +58,8 @@ class SymbolTable {
     }
 
     // true 插入成功，false 插入失败意味作用域存在相同的名字了。
-    bool insert(std::string ident, Value value) {
-      Value old_value = lookup(ident);
+    bool insert(std::string ident, Var value) {
+      Var old_value = lookup(ident);
       if (old_value.exited) {
         return false;
       }
@@ -68,17 +68,17 @@ class SymbolTable {
       return true;
     }
 
-    Value lookup(std::string ident) {
+    Var lookup(std::string ident) {
       Scope map = scopes.top();
       if (map.find(ident) == map.end()) {
-        Value res = Value();
+        Var res;
         res.exited = false;
         return res;
       }
       return map[ident];
     }
 
-    Value probe(std::string ident) {
+    Var probe(std::string ident) {
       Scopes clone = scopes;
       while (!clone.empty()) {
         Scope map = clone.top();
@@ -87,8 +87,7 @@ class SymbolTable {
         }
         clone.pop();
       }
-      Value res = Value();
-      res.exited = false;
+      Var res{.exited = false};
       return res;
     }
 };
@@ -96,14 +95,20 @@ class SymbolTable {
 
 class Environemt {
   public:
-    Environemt() : temp_var(0), is_var(false) {}
+    Environemt() : temp_var(0), is_var(false), block_var(1) {}
     int temp_var;
     bool is_var;
+    int block_var;
     std::ostringstream code;
     SymbolTable table;
+    std::string block;
 
     std::string NewTempVar() {
       return "%" + std::to_string(temp_var++);
+    }
+
+    void NewBlockName() {
+      block = "_" + std::to_string(block_var++);
     }
 };
 
@@ -220,6 +225,7 @@ class FuncDefAST : public BaseAST {
       env.code << "fun @" + ident + "(): ";
       env.code << func_type->DumpIR(env);
       env.code << " {\n";
+      env.code << "%entry:\n";
       block->DumpIR(env);
       env.code << "}";
       return env.code.str();
@@ -259,8 +265,8 @@ class BlockAST : public BaseAST {
     }
 
     std::string DumpIR(Environemt &env) const override {
-      env.code << "  " << "%entry:\n";
       env.table.enterScope();
+      env.NewBlockName();
       for (const auto &ast : asts) {
         ast->DumpIR(env);
       } 
@@ -301,7 +307,7 @@ class AssignStmtAST : public BaseAST {
     }
 
     std::string DumpIR(Environemt &env) const override {
-      Value value = env.table.probe(name);
+      Var value = env.table.probe(name);
       assert(!value.constant);
       std::string tmp = val->DumpIR(env);
       env.code << CodeGen::emitStore(tmp, value.name);
@@ -358,11 +364,7 @@ class ConstDefAST : public BaseAST {
 
     int DumpExp(Environemt &env) const override {
       int val = init->DumpExp(env);
-      Value value;
-      value.exited = true;
-      value.type = BType::INT;
-      value.val = val;
-      value.constant = true;
+      Var value{.type=BType::INT, .exited=true, .constant=true, .val=val};
       assert(env.table.insert(name, value));
       return val;
     }
@@ -428,10 +430,7 @@ class DeclAST : public BaseAST {
         case BType::INT: {
           for (const auto & ast : defVars) {
             std::string ret = ast->DumpIR(env);
-            Value value;
-            value.name = "@" + ast->name;
-            value.type = type;
-            value.constant = false;
+            Var value{.type=type, .name="@" + ast->name + env.block, .constant=false};
             env.code << CodeGen::emitAlloc(value.name, "i32");
             if (ret != "") {
               env.code << CodeGen::emitStore(ret, value.name);
@@ -454,7 +453,7 @@ class IdentfierAST : public BaseAST {
     }
 
     std::string DumpIR(Environemt &env) const override {
-      Value value = env.table.probe(name);
+      Var value = env.table.probe(name);
       if (value.constant) {
         return std::to_string(value.val);
       }
@@ -464,7 +463,7 @@ class IdentfierAST : public BaseAST {
     }
 
     int DumpExp(Environemt &env) const override {
-      Value value = env.table.probe(name);
+      Var value = env.table.probe(name);
       if (value.type != BType::INT) {
         assert(false);
       }
