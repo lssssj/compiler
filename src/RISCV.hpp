@@ -19,6 +19,7 @@ static std::string reg_names[16] = {"x0", "t0", "t1", "t2", "t3", "t4", "t5", "t
 struct Reg {
   int offset;
   bool stack;
+  std::string branch;
 
   friend std::ostream& operator<<(std::ostream& os, const Reg& r) {
       os << "Reg{offset=" << r.offset << ", stack=" << r.stack << "}" << std::endl;
@@ -32,10 +33,12 @@ class RISCVEnvironemt {
   public:
     std::ostringstream code;
     std::unordered_map<koopa_raw_value_t, Reg> value_map;
+    std::unordered_map<koopa_raw_basic_block_t, std::string> block_name;
 
     int zeroReg = 0;
     int retReg = 8;
     int stack_top = 0;
+    int branch = 0;
 
     Reg FindReg() {
       for (int i = 1; i < 16; i++) {
@@ -74,6 +77,19 @@ class RISCVEnvironemt {
         return ty->data.array.len * cal_size(ty->data.array.base);
       }
       return 4;
+    }
+
+    std::string GetBlockName(const koopa_raw_basic_block_t &val) {
+      if (block_name.find(val) != block_name.end()) {
+        return block_name[val];
+      }
+      std::string name = NewBlockName();
+      block_name[val] = name;
+      return name;
+    }
+
+    std::string NewBlockName() {
+      return "branch" + std::to_string(branch++);
     }
 };
 
@@ -162,6 +178,14 @@ class RISCVCodeGen {
     static std::string emitLw(std::string src, std::string dest) {
       return "\tlw " + src + ", " + dest + "\n";
     }
+
+    static std::string emitBnez(int offset, std::string dest) {
+      return "\tbnez " + reg_names[offset] + ", " + dest + "\n";
+    }
+
+    static std::string emitJal(std::string dest) {
+      return "\tj " + dest + "\n";
+    }
 };
 
 void Visit(RISCVEnvironemt &env, const koopa_raw_program_t &program);
@@ -179,6 +203,8 @@ Reg Visit(RISCVEnvironemt &envt, const koopa_raw_integer_t &val);
 Reg Visit(RISCVEnvironemt &env, const koopa_raw_binary_t &val);
 Reg Visit(RISCVEnvironemt &env, const koopa_raw_load_t &val);
 Reg Visit(RISCVEnvironemt &env, const koopa_raw_store_t &val);
+Reg Visit(RISCVEnvironemt &env, const koopa_raw_branch_t &val);
+Reg Visit(RISCVEnvironemt &env, const koopa_raw_jump_t &val);
 
 // 访问 raw program
 void Visit(RISCVEnvironemt &env, const koopa_raw_program_t &program) {
@@ -236,6 +262,7 @@ void Visit(RISCVEnvironemt &env, const koopa_raw_function_t &func) {
     env.code << RISCVCodeGen::emitStackAddi(-stack_size);
   }
   Visit(env, func->bbs);
+  env.stack_top = 0;
 }
 
 
@@ -245,6 +272,8 @@ void Visit(RISCVEnvironemt &env, const koopa_raw_basic_block_t &bb) {
   // 执行一些其他的必要操作
   // ...
   // 访问所有指令
+  std::string b = env.GetBlockName(bb);
+  env.code << b << ":\n";
   Visit(env, bb->insts);
 }
 
@@ -295,6 +324,12 @@ Reg Visit(RISCVEnvironemt &env, const koopa_raw_value_t &value) {
       env.value_map[value] = v;
       return v;
     }
+    case KOOPA_RVT_BRANCH: {
+      return Visit(env, kind.data.branch);
+    }
+    case KOOPA_RVT_JUMP: {
+      return Visit(env, kind.data.jump);
+    }
     default:
       // 其他类型暂时遇不到
       assert(false);
@@ -313,7 +348,6 @@ Reg Visit(RISCVEnvironemt &env, const koopa_raw_return_t &ret) {
   }
   if (env.stack_top != 0) {
     env.code << RISCVCodeGen::emitStackAddi(env.stack_top);
-    env.stack_top = 0;
   }
   env.code << RISCVCodeGen::emitRet(); 
   return Reg {-1};
@@ -443,3 +477,28 @@ Reg Visit(RISCVEnvironemt &env, const koopa_raw_store_t &val) {
   }
   return value;
 }
+
+Reg Visit(RISCVEnvironemt &env, const koopa_raw_branch_t &val) {
+  Reg reg = Visit(env, val.cond);
+  std::string true_branch_name = env.GetBlockName(val.true_bb);
+  std::string false_branch_name = env.GetBlockName(val.false_bb);
+  if (reg.stack) {
+    Reg temp = env.FindReg();
+    env.code << RISCVCodeGen::emitLw(reg_names[temp.offset], std::to_string(reg.offset) + "(sp)");
+    env.code << RISCVCodeGen::emitBnez(temp.offset, true_branch_name);
+    env.code << RISCVCodeGen::emitJal(false_branch_name);
+    env.SetRegFree(temp.offset);
+  } else {
+    env.code << RISCVCodeGen::emitBnez(reg.offset, true_branch_name);
+    env.code << RISCVCodeGen::emitJal(false_branch_name);
+    env.SetRegFree(reg.offset);
+  }
+  return Reg{.offset=-1};
+}
+
+Reg Visit(RISCVEnvironemt &env, const koopa_raw_jump_t &val) {
+  std::string true_branch_name = env.GetBlockName(val.target);
+  env.code << RISCVCodeGen::emitJal(true_branch_name);
+  return Reg{.offset=-1};
+}
+

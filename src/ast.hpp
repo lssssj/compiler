@@ -94,21 +94,38 @@ class SymbolTable {
 
 
 class Environemt {
+  using Scope = std::stack<std::string>;
   public:
-    Environemt() : temp_var(0), is_var(false), block_var(1) {}
+    Environemt() : temp_var(0), is_var(false), block_var(1), branch_var(0) {}
     int temp_var;
     bool is_var;
     int block_var;
+    int branch_var;
     std::ostringstream code;
     SymbolTable table;
-    std::string block;
+    Scope block;
 
     std::string NewTempVar() {
       return "%" + std::to_string(temp_var++);
     }
 
-    void NewBlockName() {
-      block = "_" + std::to_string(block_var++);
+    void enterBlock() {
+      table.enterScope();
+      block.push("_" + std::to_string(block_var++));
+    }
+
+    void exitBlock() {
+      table.exitScope();
+      block.pop();
+    }
+
+    std::string curBlockName() {
+      assert(!block.empty());
+      return block.top();
+    }
+
+    std::string NewBranchName() {
+      return "%branch" + std::to_string(branch_var++);
     }
 };
 
@@ -176,6 +193,14 @@ class CodeGen {
 
     static std::string emitStore(std::string value, std::string name) {
       return "  store " + value + ", " + name + "\n";
+    }
+
+    static std::string emitBr(std::string value, std::string label1, std::string label2) {
+      return "  br " + value + ", " + label1 + ", " + label2 + "\n";
+    }
+
+    static std::string emitJump(std::string label) {
+      return "  jump " + label + "\n"; 
     }
 };
 
@@ -265,13 +290,17 @@ class BlockAST : public BaseAST {
     }
 
     std::string DumpIR(Environemt &env) const override {
-      env.table.enterScope();
-      env.NewBlockName();
-      for (const auto &ast : asts) {
-        ast->DumpIR(env);
+      env.enterBlock();
+      std::string ret;
+      for (int i = 0; i < asts.size(); i++) {
+        const auto &ast = asts[i];
+        ret = ast->DumpIR(env);
+        if (ret == "ret" && i < asts.size() - 1) {
+          env.code << env.NewBranchName() << ":\n";
+        }
       } 
-      env.table.exitScope();
-      return "";
+      env.exitBlock();
+      return ret;
     }
 };
 
@@ -283,12 +312,60 @@ class ReturnStmtAST : public BaseAST {
       std::string id = std::string(ident, ' ');
       std::cout << id << "ReturnStmtAST {\n";
       ast->Dump(ident + 2);
-      std::cout << id << "}";
+      std::cout << id << "}\n";
     }
 
     std::string DumpIR(Environemt &env) const override {
       std::string val = ast->DumpIR(env);
       env.code << "  ret " << val << "\n";
+      return "ret";
+    }
+};
+
+class IfStmtAST : public BaseAST {
+  public:
+    std::unique_ptr<BaseAST> exp;
+    std::unique_ptr<BaseAST> ifStmt;
+    std::unique_ptr<BaseAST> elseStmt;
+
+    void Dump(int ident) const override {
+      std::string id = std::string(ident, ' ');
+      std::cout << id << "IfStmtAST { \n";
+      std::cout << id << " exp:\n";
+      exp->Dump(ident + 2);
+      std::cout << id << " ifStmt:\n";
+      ifStmt->Dump(ident + 2);
+      if (elseStmt) {
+        std::cout << id << " elseStmt:\n";
+        elseStmt->Dump(ident + 2);
+      }
+      std::cout << id << "}\n";
+    }
+
+    std::string DumpIR(Environemt &env) const override {
+      std::string e1 = exp->DumpIR(env);
+      std::string b1 = env.NewBranchName();
+      std::string b2 = env.NewBranchName();
+      env.code << CodeGen::emitBr(e1, b1, b2);
+      env.code << b1 << ":\n";
+      std::string label = ifStmt->DumpIR(env);
+      if (elseStmt != nullptr) {
+        std::string b3 = env.NewBranchName();
+        if (label != "ret") {
+          env.code << CodeGen::emitJump(b3);
+        }
+        env.code << b2 << ":\n";
+        label = elseStmt->DumpIR(env);
+        if (label != "ret") {
+          env.code << CodeGen::emitJump(b3);
+        }
+        env.code << b3 << ":\n";
+      } else {
+        if (label != "ret") {
+          env.code << CodeGen::emitJump(b2);
+        }
+        env.code << b2 << ":\n";
+      }
       return "";
     }
 };
@@ -303,7 +380,7 @@ class AssignStmtAST : public BaseAST {
       std::cout << id << "AssignStmtAST { \n";
       std::cout << id << "  " << "name=" << name << std::endl;
       val->Dump(ident + 2);
-      std::cout << id << "}";
+      std::cout << id << "}\n";
     }
 
     std::string DumpIR(Environemt &env) const override {
@@ -430,7 +507,7 @@ class DeclAST : public BaseAST {
         case BType::INT: {
           for (const auto & ast : defVars) {
             std::string ret = ast->DumpIR(env);
-            Var value{.type=type, .name="@" + ast->name + env.block, .constant=false};
+            Var value{.type=type, .name="@" + ast->name + env.curBlockName(), .constant=false};
             env.code << CodeGen::emitAlloc(value.name, "i32");
             if (ret != "") {
               env.code << CodeGen::emitStore(ret, value.name);
@@ -751,29 +828,63 @@ class LogicalExpAST : public BaseAST {
 
     // int 逻辑or  ->  两个数先or, 再判断结果是否 ne 0
     // int 逻辑and ->  两个数先ne 0, 再对两个结果and，最后即为结果
+    // std::string DumpIR(Environemt &env) const override {
+    //   std::string ret_code;
+    //   std::string left_var = left->DumpIR(env);
+    //   std::string right_var = right->DumpIR(env);
+    //   std::string ret_var = env.NewTempVar();
+    //   switch (op) {
+    //     case LogicalOP::OR: {
+    //       std::string r1 = env.NewTempVar();
+    //       ret_code += CodeGen::emitOr(r1, left_var, right_var);
+    //       ret_code += CodeGen::emitNe(ret_var, std::to_string(0), r1);
+    //       break;
+    //     }
+    //     case LogicalOP::AND: {
+    //       std::string r1 = env.NewTempVar();
+    //       std::string r2 = env.NewTempVar();
+    //       ret_code += CodeGen::emitNe(r1, std::to_string(0), left_var);
+    //       ret_code += CodeGen::emitNe(r2, std::to_string(0), right_var);
+    //       ret_code += CodeGen::emitAnd(ret_var, r1, r2);
+    //       break;
+    //     }
+    //   }
+    //   env.code << ret_code;
+    //   return ret_var;
+    // }
+
     std::string DumpIR(Environemt &env) const override {
-      std::string ret_code;
-      std::string left_var = left->DumpIR(env);
-      std::string right_var = right->DumpIR(env);
       std::string ret_var = env.NewTempVar();
-      switch (op) {
-        case LogicalOP::OR: {
-          std::string r1 = env.NewTempVar();
-          ret_code += CodeGen::emitOr(r1, left_var, right_var);
-          ret_code += CodeGen::emitNe(ret_var, std::to_string(0), r1);
-          break;
-        }
-        case LogicalOP::AND: {
-          std::string r1 = env.NewTempVar();
-          std::string r2 = env.NewTempVar();
-          ret_code += CodeGen::emitNe(r1, std::to_string(0), left_var);
-          ret_code += CodeGen::emitNe(r2, std::to_string(0), right_var);
-          ret_code += CodeGen::emitAnd(ret_var, r1, r2);
-          break;
-        }
+      env.code << CodeGen::emitAlloc(ret_var, "i32");
+      if (op == LogicalOP::OR) {
+        env.code << CodeGen::emitStore(std::to_string(1), ret_var);
+      } else {
+        env.code << CodeGen::emitStore(std::to_string(0), ret_var);
       }
-      env.code << ret_code;
-      return ret_var;
+      std::string b1 = env.NewBranchName();
+      std::string b2 = env.NewBranchName();
+      std::string b3 = env.NewBranchName();
+      std::string left_var = left->DumpIR(env);
+      if (op == LogicalOP::OR) {
+        env.code << CodeGen::emitBr(left_var, b1, b2);
+        env.code << b2 << ":\n";
+        std::string right_var = right->DumpIR(env);
+        env.code << CodeGen::emitBr(right_var, b1, b3);
+        env.code << b3 << ":\n";
+        env.code << CodeGen::emitStore(std::to_string(0), ret_var);
+      } else {
+        env.code << CodeGen::emitBr(left_var, b2, b1);
+        env.code << b2 << ":\n";
+        std::string right_var = right->DumpIR(env);
+        env.code << CodeGen::emitBr(right_var, b3, b1);
+        env.code << b3 << ":\n";
+        env.code << CodeGen::emitStore(std::to_string(1), ret_var);
+      }
+      env.code << CodeGen::emitJump(b1);
+      env.code << b1 << ":\n";
+      std::string r = env.NewTempVar();
+      env.code << CodeGen::emitLoad(r, ret_var);
+      return r;
     }
 
     int DumpExp(Environemt &env) const override {

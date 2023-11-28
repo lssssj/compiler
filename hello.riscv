@@ -1,5 +1,31 @@
 	.text
  	.global main
 main:
-	mv a0, x0
+	addi sp, sp, -20
+branch0:
+	li t0, 2
+	sw t0, 0(sp)
+	lw t0, 0(sp)
+	sw t0, 4(sp)
+	lw t0, 4(sp)
+	bnez t0, branch1
+	j branch2
+branch1:
+	lw t0, 0(sp)
+	sw t0, 8(sp)
+	li t0, 1
+	lw t1, 8(sp)
+	add t2, t1, t0
+	sw t2, 12(sp)
+	lw t0, 12(sp)
+	sw t0, 0(sp)
+	j branch3
+branch2:
+	sw x0, 0(sp)
+	j branch3
+branch3:
+	lw t0, 0(sp)
+	sw t0, 16(sp)
+	lw a0, 16(sp)
+	addi sp, sp, 20
 	ret

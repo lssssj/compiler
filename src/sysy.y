@@ -40,6 +40,7 @@ using namespace std;
 // lexer 返回的所有 token 种类的声明
 // 注意 IDENT 和 INT_CONST 会返回 token 的值, 分别对应 str_val 和 int_val
 %token OR AND LE LT GE GT EQ NEQ PLUS SUB MUL DIV MOD NOT CONST
+%token IF ELSE
 
 %token INT RETURN
 %token <str_val> IDENT
@@ -237,6 +238,19 @@ Stmt
   }
   | ';' {
     $$ = new BlockAST();
+  }
+  | IF '(' Exp ')' Stmt ELSE Stmt {
+    auto ast = new IfStmtAST();
+    ast->exp = unique_ptr<BaseAST>($3);
+    ast->ifStmt = unique_ptr<BaseAST>($5);
+    ast->elseStmt = unique_ptr<BaseAST>($7);
+    $$ = ast;
+  }
+  | IF '(' Exp ')' Stmt {
+    auto ast = new IfStmtAST();
+    ast->exp = unique_ptr<BaseAST>($3);
+    ast->ifStmt = unique_ptr<BaseAST>($5);
+    $$ = ast;
   }
   ;
 
