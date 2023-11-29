@@ -1,11 +1,10 @@
 fun @main(): i32 {
 %entry:
-  @a_1 = alloc i32
-  store 1, @a_1
-  %0 = load @a_1
-  br %0, %branch0, %branch1
-%branch0:
+  jump %branch0_while_entry
+%branch0_while_entry:
+  br 1, %branch1_while_body, %branch2_while_end
+%branch1_while_body:
+  ret 1
+%branch2_while_end:
   ret 0
-%branch1:
-  ret 77
 }

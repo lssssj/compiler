@@ -92,9 +92,14 @@ class SymbolTable {
     }
 };
 
+struct LoopLabel {
+  std::string entry;
+  std::string end;
+};
 
 class Environemt {
   using Scope = std::stack<std::string>;
+  using LoopLabels = std::stack<LoopLabel>;
   public:
     Environemt() : temp_var(0), is_var(false), block_var(1), branch_var(0) {}
     int temp_var;
@@ -104,6 +109,26 @@ class Environemt {
     std::ostringstream code;
     SymbolTable table;
     Scope block;
+    LoopLabels loopLabels;
+
+    void NewLoop(std::string entry, std::string end) {
+      loopLabels.push(LoopLabel{.entry=entry, .end=end});
+    }
+
+    std::string GetCurLoopEntry() {
+      assert(!loopLabels.empty());
+      return loopLabels.top().entry;
+    }
+
+    std::string GetCurLoopEnd() {
+      assert(!loopLabels.empty());
+      return loopLabels.top().end;
+    }
+
+    void ExitLoop() {
+      assert(!loopLabels.empty());
+      loopLabels.pop();
+    }
 
     std::string NewTempVar() {
       return "%" + std::to_string(temp_var++);
@@ -388,6 +413,67 @@ class AssignStmtAST : public BaseAST {
       assert(!value.constant);
       std::string tmp = val->DumpIR(env);
       env.code << CodeGen::emitStore(tmp, value.name);
+      return "";
+    }
+};
+
+class WhileStmtAST : public BaseAST {
+  public:
+    std::unique_ptr<BaseAST> exp;
+    std::unique_ptr<BaseAST> body;
+
+    void Dump(int ident) const override {
+      std::string id = std::string(ident, ' ');
+      std::cout << id << "WhileStmtAST { \n";
+      exp->Dump(ident+2);
+      body->Dump(ident + 2);
+      std::cout << id << "}\n";
+    }
+
+    std::string DumpIR(Environemt &env) const override {
+      std::string while_entry = env.NewBranchName() + "_while_entry";
+      std::string while_body = env.NewBranchName() + "_while_body";
+      std::string end = env.NewBranchName() + "_while_end";
+      env.NewLoop(while_entry, end);
+      env.code << CodeGen::emitJump(while_entry);
+      env.code << while_entry << ":\n";
+      std::string cond = exp->DumpIR(env);
+      env.code << CodeGen::emitBr(cond, while_body, end);
+      env.code << while_body << ":\n";
+      std::string ret = body->DumpIR(env);
+      if (ret != "ret") {
+        env.code << CodeGen::emitJump(while_entry);
+      }
+      env.code << end << ":\n";
+      env.ExitLoop();
+      return "";
+    }
+};
+
+class BreakAST : public BaseAST {
+  public:
+    void Dump(int ident) const override {
+      std::string id = std::string(ident, ' ');
+      std::cout << id << "BreakAST\n";    
+    }
+
+    std::string DumpIR(Environemt &env) const override {
+      env.code << CodeGen::emitJump(env.GetCurLoopEnd());
+      env.code << env.NewBranchName() + "_break" << ":\n";
+      return "";
+    }
+};
+
+class ContinueAST : public BaseAST {
+  public:
+    void Dump(int ident) const override {
+      std::string id = std::string(ident, ' ');
+      std::cout << id << "ContinueAST\n";    
+    }
+
+    std::string DumpIR(Environemt &env) const override {
+      env.code << CodeGen::emitJump(env.GetCurLoopEntry());
+      env.code << env.NewBranchName() + "_continue" << ":\n";
       return "";
     }
 };
