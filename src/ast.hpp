@@ -31,7 +31,7 @@ enum class LogicalOP {
 };
 
 enum class BType {
-  INT,
+  INT, VOID
 };
 
 struct Var {
@@ -101,18 +101,28 @@ class Environemt {
   using Scope = std::stack<std::string>;
   using LoopLabels = std::stack<LoopLabel>;
   public:
-    Environemt() : temp_var(0), is_var(false), block_var(1), branch_var(0) {}
+    Environemt() : temp_var(0), is_var(false), block_var(1), branch_var(0), global_var(false) {}
     int temp_var;
     bool is_var;
     int block_var;
     int branch_var;
+    bool global_var;
     std::ostringstream code;
     SymbolTable table;
     Scope block;
     LoopLabels loopLabels;
+    std::unordered_map<std::string, bool> funcs;
 
     void NewLoop(std::string entry, std::string end) {
       loopLabels.push(LoopLabel{.entry=entry, .end=end});
+    }
+
+    bool is_global_var() {
+      return global_var;
+    }
+
+    void set_global_var(bool b) {
+      global_var = b;
     }
 
     std::string GetCurLoopEntry() {
@@ -151,6 +161,14 @@ class Environemt {
 
     std::string NewBranchName() {
       return "%branch" + std::to_string(branch_var++);
+    }
+
+    void NewFunc(std::string name, bool ret) {
+      funcs[name] = ret;
+    }
+
+    bool FuncHasReturnValue(std::string name) {
+      return funcs[name];
     }
 };
 
@@ -242,63 +260,248 @@ class BaseAST {
 
 class CompUnitAST : public BaseAST {
   public:
-    std::unique_ptr<BaseAST> func_def;
+    std::vector<std::unique_ptr<BaseAST>> func_defs;
+    std::vector<std::unique_ptr<BaseAST>> decls;
 
     void Dump(int ident) const override {
       std::string id = std::string(ident, ' ');
       std::cout << id << "CompUnitAST {\n";
-      func_def->Dump(ident + 2);
+      for (size_t i = 0; i < func_defs.size(); i++) {
+        func_defs[i]->Dump(ident + 2);
+      }
+      for (size_t i = 0; i < decls.size(); i++) {
+        decls[i]->Dump(ident + 2);
+      }
       std::cout << id << "}";
     }
 
     std::string DumpIR(Environemt &env) const override {
-      return func_def->DumpIR(env);
+      env.enterBlock();
+      env.set_global_var(true);
+      for (const auto &d : decls) {
+        d->DumpIR(env);
+      }
+      env.set_global_var(false);
+      env.code << "\n";
+      env.code << "decl @getint(): i32\n";
+      env.code << "decl @getch(): i32\n";
+      env.code << "decl @getarray(*i32): i32\n";
+      env.code << "decl @putint(i32)\n";
+      env.code << "decl @putch(i32)\n";
+      env.code << "decl @putarray(i32, *i32)\n";
+      env.code << "decl @starttime()\n";
+      env.code << "decl @stoptime()\n\n";
+      env.NewFunc("getint", true);
+      env.NewFunc("getch", true);
+      env.NewFunc("getarray", true);
+      env.NewFunc("getint", true);
+      for (size_t i = 0; i < func_defs.size(); i++) {
+        if (i > 0) {
+          env.code << "\n\n";
+        }
+        func_defs[i]->DumpIR(env);
+      }
+      env.exitBlock();
+      return env.code.str();
+    }
+};
+
+class FuncFParamAST : public BaseAST {
+  public:
+    BType type;
+    std::string ident;
+
+    void Dump(int iden) const override {
+      std::cout << "type=";
+      switch (type) {
+        case BType::INT:
+          std::cout << "int";
+          break;
+        case BType::VOID:
+          std::cout << "void";
+          break;  
+      }
+      std::cout << ", ident=" << ident;
+    }
+
+    std::string DumpIR(Environemt &env) const override {
+      std::string p_name = "@" + ident;
+      
+      env.code << p_name << ":" << "i32";
+      return "param";
+    }
+
+    void AllocNewParam(Environemt &env) const {
+      std::string p_name = "@" + ident;
+      std::string tmp = env.NewTempVar();
+      env.code << CodeGen::emitAlloc(tmp, "i32");
+      env.code << CodeGen::emitStore(p_name, tmp);
+      Var value{.type=BType::INT, .name = tmp, .exited=true, .constant=false};
+      assert(env.table.insert(ident, value));
+    }
+};
+
+class FuncFParamsAST : public BaseAST {
+  public:
+    std::vector<std::unique_ptr<FuncFParamAST>> params;
+    
+    void Dump(int ident) const override {
+      for (const auto & param : params) {
+        std::cout << " ";
+        param->Dump(ident);
+      }
+    }
+
+    std::string DumpIR(Environemt &env) const override {
+      for (size_t i = 0; i < params.size(); i++) {
+        if (i > 0) {
+          env.code << ", ";
+        }
+        params[i]->DumpIR(env);
+      }
+      return "params";
+    }
+
+    void AllocNewParams(Environemt &env) const {
+      for (const auto & p : params) {
+        p->AllocNewParam(env);
+      }
+    }
+};
+
+class FuncRParamsAST : public BaseAST {
+  public:
+    std::vector<std::unique_ptr<BaseAST>> param_vec;
+
+    void Dump(int ident) const override {
+      std::string id = std::string(ident, ' ');
+      for (const auto& p : param_vec) {
+        p->Dump(ident);
+      }
+      return;
+    }
+
+    std::string DumpIR(Environemt &env) const override {
+      std::string ret;
+      int i = 0;
+      for (const auto &p : param_vec) {
+        if (i > 0) {
+          ret += "_";
+        }
+        ret += p->DumpIR(env);
+        i++;
+      }
+      return ret;
+    }
+};
+
+static std::vector<std::string> splitString(const std::string& input, char delimiter) {
+  std::vector<std::string> tokens;
+  std::istringstream tokenStream(input);
+  std::string token;
+
+  while (std::getline(tokenStream, token, delimiter)) {
+      tokens.push_back(token);
+  }
+
+  return tokens;
+}
+class FuncCallAST : public BaseAST {
+  public:
+    std::string func_name;
+    std::unique_ptr<FuncRParamsAST> params;
+
+    void Dump(int ident) const override {
+      std::string id = std::string(ident, ' ');
+      std::cout << id << func_name << "(\n";
+      if (params) {
+        params->Dump(ident+2);
+      }
+      std::cout << id << ")\n";
+      return;
+    }
+
+    std::string DumpIR(Environemt &env) const override {
+      std::vector<std::string> p;
+      if (params) {
+        p = splitString(params->DumpIR(env), '_');
+      }
+      std::string ret;
+      if (env.FuncHasReturnValue(func_name)) {
+        ret = env.NewTempVar();
+        env.code << "  " << ret << " =";
+      }
+      env.code << "  call @" << func_name << "(";
+      int i = 0;
+      for (const auto &s : p) {
+        if (i > 0) {
+          env.code << ", ";
+        }
+        env.code << s;
+        i++;
+      }
+      env.code << ")\n";
+      return ret;
     }
 };
 
 class FuncDefAST : public BaseAST {
   public:
-    std::unique_ptr<BaseAST> func_type;
+    BType ret_type;
     std::string ident;
     std::unique_ptr<BaseAST> block;
+    std::unique_ptr<FuncFParamsAST> params;
 
     void Dump(int ident) const override {
       std::string id = std::string(ident, ' ');
       std::cout << id << "FuncDefAST { ";
-      func_type->Dump(0);
-      std::cout << ", " << ident << ", \n";
+      switch (ret_type) {
+        case BType::INT:
+          std::cout << " int";
+          break;
+        case BType::VOID:
+          std::cout << " void";
+          break;  
+      }
+      std::cout << ", " << ident;
+      if (params) {
+        std::cout << ",";
+        params->Dump(0);
+      }
+      std::cout << "\n";
       block->Dump(ident + 2);
       std::cout << id << "}\n";
     }
 
     std::string DumpIR(Environemt &env) const override {
-      env.code << "fun @" + ident + "(): ";
-      env.code << func_type->DumpIR(env);
+      std::string fret = ret_type == BType::INT ? "i32" : "";
+      env.NewFunc(ident, fret == "i32");
+      env.code << "fun @" + ident + "(";
+      if (params) {
+        params->DumpIR(env);
+      }
+      env.code << ")";
+      if (fret == "i32") {
+        env.code << ": " << fret;
+      }
       env.code << " {\n";
       env.code << "%entry:\n";
-      block->DumpIR(env);
+      if (params) {
+        env.table.enterScope();
+        params->AllocNewParams(env);
+      }
+      if (block->DumpIR(env) != "ret") {
+        env.code << "  ret\n";
+      }
       env.code << "}";
+      if (params) {
+        env.table.exitScope();
+      }
       return env.code.str();
     }
 };
 
-class FuncTypeAST : public BaseAST {
-  public:
-    std::string _type;
 
-    void Dump(int ident) const override {
-      std::string id = std::string(ident, ' ');
-      std::cout << id << "FuncTypeAST { " << _type << " }";
-    }
-
-    std::string DumpIR(Environemt &env) const override {
-      if (_type == "int") {
-        return "i32";
-      }
-      return _type;
-    }
-
-};
 
 class BlockAST : public BaseAST {
   public:
@@ -336,12 +539,17 @@ class ReturnStmtAST : public BaseAST {
     void Dump(int ident) const override {
       std::string id = std::string(ident, ' ');
       std::cout << id << "ReturnStmtAST {\n";
-      ast->Dump(ident + 2);
+      if (ast) {
+        ast->Dump(ident + 2);
+      }
       std::cout << id << "}\n";
     }
 
     std::string DumpIR(Environemt &env) const override {
-      std::string val = ast->DumpIR(env);
+      std::string val;
+      if (ast) { 
+        val = ast->DumpIR(env);
+      }
       env.code << "  ret " << val << "\n";
       return "ret";
     }
@@ -546,6 +754,8 @@ class ConstDeclAST : public BaseAST {
         case BType::INT:
           std::cout << "type=int" << std::endl;
           break;
+        case BType::VOID:
+          assert(false);  
       }
       for (const auto &ast : defVars) {
         ast->Dump(ident + 2);
@@ -580,6 +790,8 @@ class DeclAST : public BaseAST {
         case BType::INT:
           std::cout << "type=int" << std::endl;
           break;
+        case BType::VOID:
+          assert(false);  
       }
       for (const auto &ast : defVars) {
         ast->Dump(ident + 2);
@@ -593,16 +805,32 @@ class DeclAST : public BaseAST {
         case BType::INT: {
           for (const auto & ast : defVars) {
             std::string ret = ast->DumpIR(env);
-            Var value{.type=type, .name="@" + ast->name + env.curBlockName(), .constant=false};
-            env.code << CodeGen::emitAlloc(value.name, "i32");
-            if (ret != "") {
-              env.code << CodeGen::emitStore(ret, value.name);
+            if (env.is_global_var()) {
+              Var value{.type=type, .name="@" + ast->name, .constant=false};
+              env.code << "global " << value.name << " = ";
+              env.code <<"alloc i32, ";
+              if (ret != "") {
+                env.code << ret << "\n";
+              } else {
+                env.code << "zeroinit\n";
+              }
+              env.table.insert(ast->name, value);
+            } else {
+              Var value{.type=type, .name="@" + ast->name + env.curBlockName(), .constant=false};
+              env.code << CodeGen::emitAlloc(value.name, "i32");
+              if (ret != "") {
+                env.code << CodeGen::emitStore(ret, value.name);
+              }
+              env.table.insert(ast->name, value);
             }
-            env.table.insert(ast->name, value);
+            
           }
+          break;
         }
-        return "";
+        case BType::VOID:
+          assert(false);
       }
+      return "";
     }
 };
 

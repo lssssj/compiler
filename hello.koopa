@@ -1,10 +1,16 @@
+global @v = alloc i32, zeroinit
+
+decl @getint(): i32
+decl @getch(): i32
+decl @getarray(*i32): i32
+decl @putint(i32)
+decl @putch(i32)
+decl @putarray(i32, *i32)
+decl @starttime()
+decl @stoptime()
+
 fun @main(): i32 {
 %entry:
-  jump %branch0_while_entry
-%branch0_while_entry:
-  br 1, %branch1_while_body, %branch2_while_end
-%branch1_while_body:
-  ret 1
-%branch2_while_end:
-  ret 0
+  %0 = load @v
+  ret %0
 }

@@ -1,7 +1,38 @@
+// int half(int x, int y) {
+  
+//   return x+y;
+// }
+
+// void f() {}
+
+// int main() {
+//   int x = 10;
+//   int y =half(1, x);
+//   int z = x + y;
+//   return z;
+// }
+
+int x;
+const int y = 10;
+const int z = y + 1;
+int init = 1;
+
 int main() {
-  while (1) return 1;
+  putint(x);
+  putch(32);
+  putint(y);
+  putch(32);
+  putint(z);
+  putch(32);
+  putint(init);
+  putch(10);
   return 0;
 }
+
+
+// sp+48
+
+// sp
 
 /**
 fun @main(): i32 {

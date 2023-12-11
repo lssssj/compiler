@@ -42,14 +42,15 @@ using namespace std;
 %token OR AND LE LT GE GT EQ NEQ PLUS SUB MUL DIV MOD NOT CONST
 %token IF ELSE WHILE CONTINUE BREAK
 
-%token INT RETURN
+%token INT RETURN VOID
 %token <str_val> IDENT
 %token <int_val> INT_CONST
 
 // 非终结符的类型定义
-%type <ast_val> FuncDef FuncType Block Stmt Number
+%type <ast_val> FuncDef Block Stmt Number
 %type <ast_val> Exp PrimaryExp UnaryExp MulExp AddExp RelExp EqExp LAndExp LOrExp
 %type <ast_val> BlockItem ConstDef VarDef Decl ConstDecl VarDecl
+%type <ast_val> FuncFParam FuncFParams FuncRParams
 %type <type> BType;
 
 %%
@@ -62,8 +63,23 @@ using namespace std;
 CompUnit
   : FuncDef {
     auto comp_unit = make_unique<CompUnitAST>();
-    comp_unit->func_def = unique_ptr<BaseAST>($1);
+    comp_unit->func_defs.push_back(unique_ptr<BaseAST>($1));
     ast = move(comp_unit);
+  }
+  | Decl {
+    auto comp_unit = make_unique<CompUnitAST>();
+    comp_unit->decls.push_back(unique_ptr<BaseAST>($1));
+    ast = move(comp_unit);
+  }
+  | CompUnit FuncDef {
+    auto ret = (CompUnitAST*)ast.get();
+    auto func_def = $2;
+    ret->func_defs.push_back(unique_ptr<BaseAST>(func_def));
+  }
+  | CompUnit Decl {
+    auto ret = (CompUnitAST*)ast.get();
+    auto decl = $2;
+    ret->decls.push_back(unique_ptr<BaseAST>(decl));
   }
   ;
 
@@ -78,20 +94,45 @@ CompUnit
 // 虽然此处你看不出用 unique_ptr 和手动 delete 的区别, 但当我们定义了 AST 之后
 // 这种写法会省下很多内存管理的负担
 FuncDef
-  : FuncType IDENT '(' ')' Block {
+  : BType IDENT '('  ')' Block {
     auto ast = new FuncDefAST();
-    ast->func_type = unique_ptr<BaseAST>($1);
+    ast->ret_type = $1;
     ast->ident = *unique_ptr<string>($2);
     ast->block = unique_ptr<BaseAST>($5);
+    $$ = ast;
+  }
+  | BType IDENT '(' FuncFParams ')' Block {
+    auto ast = new FuncDefAST();
+    ast->ret_type = $1;
+    ast->ident = *unique_ptr<string>($2);
+    ast->block = unique_ptr<BaseAST>($6);
+    ast->params = unique_ptr<FuncFParamsAST>((FuncFParamsAST*)$4);
     $$ = ast;
   }
   ;
 
 // 同上, 不再解释
-FuncType
-  : INT {
-    auto ast = new FuncTypeAST();
-    ast->_type = string("int");
+
+FuncFParams
+  : FuncFParam {
+    auto ps = new FuncFParamsAST();
+    auto p = std::unique_ptr<FuncFParamAST>((FuncFParamAST*)$1);
+    ps->params.push_back(move(p));
+    $$ = ps;
+  } 
+  | FuncFParams ',' FuncFParam {
+    auto ps = (FuncFParamsAST*)$1;
+    auto p = std::unique_ptr<FuncFParamAST>((FuncFParamAST*)$3);
+    ps->params.push_back(move(p));
+    $$ = ps;
+  }
+  ;
+
+FuncFParam 
+  : BType IDENT {
+    auto ast = new FuncFParamAST();
+    ast->type = $1;
+    ast->ident = *unique_ptr<string>($2);
     $$ = ast;
   }
   ;
@@ -216,6 +257,9 @@ BType
   : INT {
     $$ = BType::INT;
   }
+  | VOID {
+    $$ = BType::VOID;
+  }
   ;
  
 Stmt
@@ -223,6 +267,9 @@ Stmt
     auto ast = new ReturnStmtAST();
     ast->ast = unique_ptr<BaseAST>($2); 
     $$ = ast;
+  }
+  | RETURN ';' {
+    $$ = new ReturnStmtAST();
   }
   | IDENT '=' Exp ';' {
     auto ast = new AssignStmtAST();
@@ -311,6 +358,30 @@ UnaryExp
     ast->child = unique_ptr<BaseAST>($2);
     ast->op = UnaryOP::NOT;
     $$ = ast;
+  }
+  | IDENT '('  ')' {
+    auto p = new FuncCallAST();
+    p->func_name = *std::unique_ptr<std::string>($1);
+    $$ = p;
+  }
+  | IDENT '(' FuncRParams ')' {
+    auto p = new FuncCallAST();
+    p->func_name = *std::unique_ptr<std::string>($1);
+    p->params = std::unique_ptr<FuncRParamsAST>((FuncRParamsAST*)$3);
+    $$ = p;
+  }
+  ;
+
+FuncRParams
+  : Exp {
+    auto p = new FuncRParamsAST();
+    p->param_vec.push_back(std::unique_ptr<BaseAST>($1));
+    $$ = p;
+  }
+  | FuncRParams ',' Exp {
+    auto p = (FuncRParamsAST*)$1;
+    p->param_vec.push_back(std::unique_ptr<BaseAST>($3));
+    $$ = p;
   }
   ;
 

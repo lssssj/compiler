@@ -13,7 +13,7 @@
                 "args": [ "-riscv", "hello.c", "-o", "hello.riscv"],
                 // -koopa hello.c -o hello.koopa
                 "cwd": "${workspaceFolder}",
-                "stopOnEntry": true
+                "stopOnEntry": false
             }
         ]
     }

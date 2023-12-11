@@ -46,6 +46,7 @@ Hexadecimal   0[xX][0-9a-fA-F]+
 "while"         { return WHILE; }
 "continue"      { return CONTINUE; }
 "break"         { return BREAK; }
+"void"          { return VOID; }
 
 "||"            { return OR; }
 "&&"            { return AND; }
